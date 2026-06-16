@@ -4,14 +4,14 @@ use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use anyhow::{anyhow, Context, Result};
-use ratex_layout::{layout, to_display_list, LayoutOptions};
+use anyhow::{Context, Result, anyhow};
+use ratex_layout::{LayoutOptions, layout, to_display_list};
 use ratex_parser::parser::parse;
-use ratex_render::{render_to_png, RenderOptions};
+use ratex_render::{RenderOptions, render_to_png};
 use ratex_types::color::Color;
 use ratex_types::math_style::MathStyle;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 #[derive(Debug, Deserialize)]
