@@ -308,6 +308,8 @@ fn resolve_cache_dir() -> Result<PathBuf> {
         PathBuf::from(xdg)
     } else if let Ok(home) = std::env::var("HOME") {
         PathBuf::from(home).join(".cache")
+    } else if let Ok(localappdata) = std::env::var("LocalAppData") {
+        PathBuf::from(localappdata)
     } else {
         return Err(anyhow!("unable to resolve cache directory"));
     };
