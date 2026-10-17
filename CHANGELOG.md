@@ -17,7 +17,7 @@ This project follows a practical changelog format inspired by [Keep a Changelog]
 
 ### Fixed
 
-- Added a `LocalAppData` cache-directory fallback for native Windows worker startup when `HOME` is unavailable (contributed by [tomried](https://github.com/tomried) in [#11](https://github.com/techwizrd/render-latex.nvim/pull/11)).
+- Added a `LocalAppData` cache-directory fallback for native Windows worker startup when `HOME` is unavailable. Thanks to [tomried](https://github.com/tomried) for contributing the fix in [#11](https://github.com/techwizrd/render-latex.nvim/pull/11).
 - Kept equation positions correct after multi-line pastes, deletions, and replacements.
 - Reduced typing delays in notes with densely packed adjacent equations.
 - Revealed raw equations when images cannot fit in visible windows and restored rendering after resizing.
