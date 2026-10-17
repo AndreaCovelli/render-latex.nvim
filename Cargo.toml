@@ -15,7 +15,7 @@ png = "0.17"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
-ratex-layout = { git = "https://github.com/erweixin/RaTeX", package = "ratex-layout" }
-ratex-parser = { git = "https://github.com/erweixin/RaTeX", package = "ratex-parser" }
-ratex-render = { git = "https://github.com/erweixin/RaTeX", package = "ratex-render", features = ["embed-fonts"] }
-ratex-types = { git = "https://github.com/erweixin/RaTeX", package = "ratex-types" }
+ratex-layout = { git = "https://github.com/erweixin/RaTeX", rev = "7d9f9a39218914bead8ffdf39b79028a01d12c22", package = "ratex-layout" }
+ratex-parser = { git = "https://github.com/erweixin/RaTeX", rev = "7d9f9a39218914bead8ffdf39b79028a01d12c22", package = "ratex-parser" }
+ratex-render = { git = "https://github.com/erweixin/RaTeX", rev = "7d9f9a39218914bead8ffdf39b79028a01d12c22", package = "ratex-render", features = ["embed-fonts"] }
+ratex-types = { git = "https://github.com/erweixin/RaTeX", rev = "7d9f9a39218914bead8ffdf39b79028a01d12c22", package = "ratex-types" }

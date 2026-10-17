@@ -184,7 +184,7 @@ function M.build_worker(notify, callback)
     return
   end
 
-  local command = { "cargo", "build", "--release", "--package", "render-latex-worker" }
+  local command = { "cargo", "build", "--locked", "--release", "--package", "render-latex-worker" }
   build_running = true
   build_error = nil
   if notify then

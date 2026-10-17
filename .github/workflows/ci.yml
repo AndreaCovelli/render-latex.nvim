@@ -69,9 +69,9 @@ jobs:
         with:
           workspaces: .
       - name: Run worker tests
-        run: cargo test --package render-latex-worker
+        run: cargo test --locked --package render-latex-worker
       - name: Run Clippy
-        run: cargo clippy --package render-latex-worker --all-targets -- -D warnings
+        run: cargo clippy --locked --package render-latex-worker --all-targets -- -D warnings
 
   worker-build:
     name: Worker build (${{ matrix.os }})
@@ -93,4 +93,10 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: cargo fmt --all --check
       - name: Build worker
-        run: cargo build --release --package render-latex-worker
+        run: cargo build --locked --release --package render-latex-worker
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Smoke-test worker
+        shell: bash
+        run: python tests/worker_smoke.py target/release/render-latex-worker${{ startsWith(matrix.os, 'windows') && '.exe' || '' }}

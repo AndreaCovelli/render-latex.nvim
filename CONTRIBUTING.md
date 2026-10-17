@@ -11,6 +11,7 @@ You will need:
 - Neovim 0.10+ for the runtime target. CI also tests newer stable versions and nightly.
 - Rust stable for the worker.
 - Go for the pinned `actionlint` target.
+- Python 3.9+ for `make smoke-worker` (CI uses Python 3.13).
 - `stylua` for Lua formatting.
 - `lua-language-server` for type checking.
 - `prek` if you want local hooks.
@@ -76,6 +77,7 @@ Useful individual targets:
 - `make typecheck`: run LuaLS diagnostics.
 - `make clippy`: run Rust lints.
 - `make rust-test`: run Rust worker tests.
+- `make smoke-worker`: build and exercise the native worker protocol, PNG rendering, recovery, and Windows cache fallback.
 - `make smoke-health`: run the headless health check.
 - `make smoke-help`: verify `:help render-latex` opens.
 
@@ -173,11 +175,11 @@ Before tagging a release:
 
 1. Run `make format`.
 2. Run `make check`.
-3. Run `make smoke-repros`.
+3. Run `make smoke-repros` and `make smoke-worker`.
 4. Push to GitHub and verify CI on hosted runners.
-5. Create an RC tag such as `v0.1.0-rc1`.
+5. Add a dated changelog section matching the release version, then create an RC tag such as `v0.1.0-rc5` on the tested commit. Pushing the tag starts publishing; the workflow marks hyphenated tags as prereleases and uses that changelog section as release notes.
 6. Confirm release assets and `SHA256SUMS` are uploaded.
-7. Test `:RenderLatex install` from a clean install against the release.
+7. Test `:RenderLatex install` from an isolated Neovim data directory with no `worker.bin` override and `install.version` pinned to the new tag. Confirm status reports `source = "managed"` and render an equation.
 8. Smoke-test lazy.nvim with `{ "techwizrd/render-latex.nvim", ft = "markdown", opts = {} }`.
 9. Smoke-test `vim.pack.add({ "https://github.com/techwizrd/render-latex.nvim" })`.
 10. Test Windows worker download and launch when possible.
@@ -186,6 +188,8 @@ Before tagging a release:
 ## CI Notes
 
 CI runs Lua/Neovim tests on Linux and worker builds on Linux, macOS, Windows x64, and Windows arm64. The release workflow publishes stable tagged assets, and the unreleased workflow refreshes rolling prerelease assets on pushes to `main`.
+
+Every platform worker build runs a framed-protocol smoke test covering rendering, error recovery, shutdown, and the Windows cache-directory fallback before assets are uploaded.
 
 `Cargo.lock` is committed intentionally so worker release builds are reproducible.
 

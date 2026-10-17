@@ -1,4 +1,4 @@
-.PHONY: test lint actionlint format typecheck check build-worker run-worker rustfmt clippy rust-test smoke-base smoke-long-note smoke-light-theme smoke-obsidian smoke-render-markdown smoke-render-markdown-rich smoke-jupynvim smoke-doctor smoke-health smoke-help smoke-integrations smoke-repros
+.PHONY: test lint actionlint format typecheck check build-worker run-worker rustfmt clippy rust-test smoke-worker smoke-base smoke-long-note smoke-light-theme smoke-obsidian smoke-render-markdown smoke-render-markdown-rich smoke-jupynvim smoke-doctor smoke-health smoke-help smoke-integrations smoke-repros
 
 test:
 	nvim -l tests/minit.lua --minitest $(FILE)
@@ -20,19 +20,23 @@ typecheck:
 	VIM="$(NVIM_VIMRUNTIME)/.." lua-language-server --check_format=pretty --check lua/ --checklevel=Warning --configpath="$$(pwd)/.luarc.json"
 
 build-worker:
-	cargo build --release --package render-latex-worker
+	cargo build --locked --release --package render-latex-worker
 
 run-worker:
-	cargo run --release --package render-latex-worker
+	cargo run --locked --release --package render-latex-worker
 
 rustfmt:
 	cargo fmt --all
 
 clippy:
-	cargo clippy --package render-latex-worker --all-targets -- -D warnings
+	cargo clippy --locked --package render-latex-worker --all-targets -- -D warnings
 
 rust-test:
-	cargo test --package render-latex-worker
+	cargo test --locked --package render-latex-worker
+
+PYTHON ?= python3
+smoke-worker: build-worker
+	$(PYTHON) tests/worker_smoke.py target/release/render-latex-worker
 
 smoke-base:
 	nvim --headless -u repro/repro.lua repro/sample.md '+lua vim.defer_fn(function() require("render_latex").status(); vim.cmd("qa") end, 1000)'

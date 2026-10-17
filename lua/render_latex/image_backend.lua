@@ -119,7 +119,10 @@ local function start_probe()
   local request_id = probe.request_id
   probe.autocmd = vim.api.nvim_create_autocmd("TermResponse", {
     callback = function(ev)
-      local sequence = ev.data.sequence
+      local sequence = type(ev.data) == "table" and ev.data.sequence or ev.data
+      if type(sequence) ~= "string" then
+        return
+      end
       local response_id = tonumber(sequence:match("\027_Gi=(%d+);"))
       if response_id == request_id then
         finish_probe("supported")

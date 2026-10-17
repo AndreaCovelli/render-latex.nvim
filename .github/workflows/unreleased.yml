@@ -48,7 +48,12 @@ jobs:
         with:
           workspaces: .
       - name: Build worker
-        run: cargo build --release --package render-latex-worker
+        run: cargo build --locked --release --package render-latex-worker
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Smoke-test worker
+        run: python tests/worker_smoke.py "${{ matrix.binary }}"
       - name: Stage asset
         shell: bash
         run: cp "${{ matrix.binary }}" "${{ matrix.asset }}"

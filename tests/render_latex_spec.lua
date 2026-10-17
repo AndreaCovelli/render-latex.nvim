@@ -39,6 +39,7 @@ describe("render_latex.detect", function()
     assert.is_true(ok)
     assert.are.equal(1, #equations)
     assert.are.equal("$$", equations[1].delimiter)
+    assert.are.equal("x^2", equations[1].text)
   end)
 
   it("finds $$ display math blocks", function()
@@ -115,6 +116,225 @@ describe("render_latex.detect", function()
     assert.are.equal(1, #equations)
     assert.are.equal(59, equations[1].start_row)
     assert.are.equal(59, equations[1].end_row)
+  end)
+
+  it("updates distant equations when multiline context changes", function()
+    for _, marker in ipairs({ "```", "~~~", "%%", "---" }) do
+      local buf = vim.api.nvim_create_buf(false, true)
+      local lines = {}
+      for index = 1, 200 do
+        lines[index] = "paragraph"
+      end
+      lines[100] = "$$x$$"
+      vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+      local equations = detect.scan(buf)
+
+      vim.api.nvim_buf_set_lines(buf, 0, 1, false, { marker })
+      equations = detect.update(equations, buf, 0, 0, 0)
+      assert.are.same(detect.scan(buf), equations)
+      assert.are.equal(0, #equations)
+
+      vim.api.nvim_buf_set_lines(buf, 0, 1, false, { "paragraph" })
+      equations = detect.update(equations, buf, 0, 0, 0)
+      assert.are.same(detect.scan(buf), equations)
+      assert.are.equal(1, #equations)
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end
+  end)
+
+  it("finds new display blocks longer than the incremental scan window", function()
+    for _, delimiters in ipairs({ { "$$", "$$" }, { "\\[", "\\]" } }) do
+      local buf = vim.api.nvim_create_buf(false, true)
+      local lines = {}
+      for index = 1, 200 do
+        lines[index] = "x"
+      end
+      lines[150] = delimiters[2]
+      vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+      local equations = detect.scan(buf)
+      vim.api.nvim_buf_set_lines(buf, 0, 1, false, { delimiters[1] })
+      equations = detect.update(equations, buf, 0, 0, 0)
+      assert.are.same(detect.scan(buf), equations)
+      assert.are.equal(1, #equations)
+      assert.are.equal(149, equations[1].end_row)
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end
+  end)
+
+  it("reuses scan context for an unchanged buffer", function()
+    local buf = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "plain", "$$x$$", "$y$" })
+    detect.scan(buf)
+    local previous_get_lines = vim.api.nvim_buf_get_lines
+    local reads = 0
+    vim.api.nvim_buf_get_lines = function(...)
+      reads = reads + 1
+      return previous_get_lines(...)
+    end
+    local ok, err = pcall(function()
+      detect.scan(buf)
+      detect.inline(buf)
+      detect.inline_ranges(buf, { { start_row = 0, end_row = 2 } })
+    end)
+    vim.api.nvim_buf_get_lines = previous_get_lines
+    vim.api.nvim_buf_delete(buf, { force = true })
+    if not ok then
+      error(err)
+    end
+    assert.are.equal(0, reads)
+  end)
+
+  it("does not invoke Tree-sitter for ordinary edits and standalone math", function()
+    local buf = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "plain", "$$x$$", "after" })
+    local previous_parser = vim.treesitter.get_parser
+    local calls = 0
+    vim.treesitter.get_parser = function()
+      calls = calls + 1
+      error("parser should not be needed")
+    end
+    local ok, equations = pcall(function()
+      local indexed = detect.scan(buf)
+      vim.api.nvim_buf_set_lines(buf, 0, 1, false, { "edited" })
+      return detect.update(indexed, buf, 0, 0, 0)
+    end)
+    vim.treesitter.get_parser = previous_parser
+    vim.api.nvim_buf_delete(buf, { force = true })
+    assert.is_true(ok)
+    assert.are.equal(1, #equations)
+    assert.are.equal(0, calls)
+  end)
+
+  it("keeps Tree-sitter detection for embedded display math with a bounded parse", function()
+    local previous_module = package.loaded["render_latex.detect"]
+    local previous_parser = vim.treesitter.get_parser
+    local previous_query = vim.treesitter.query.parse
+    local ranges = {}
+    local node = {
+      range = function()
+        return 0, 7, 0, 12
+      end,
+    }
+    local tree = {
+      root = function()
+        return node
+      end,
+    }
+    local child = {
+      parse = function(_, range)
+        ranges[#ranges + 1] = range
+        return { tree }
+      end,
+    }
+    vim.treesitter.get_parser = function()
+      return {
+        parse = function(_, range)
+          ranges[#ranges + 1] = range
+        end,
+        children = function()
+          return { markdown_inline = child }
+        end,
+      }
+    end
+    vim.treesitter.query.parse = function()
+      return {
+        iter_captures = function()
+          local visited = false
+          return function()
+            if not visited then
+              visited = true
+              return 1, node
+            end
+          end
+        end,
+      }
+    end
+    package.loaded["render_latex.detect"] = nil
+    local buf = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "before $$x$$ after" })
+    local ok, equations = pcall(function()
+      return require("render_latex.detect").scan(buf)
+    end)
+    package.loaded["render_latex.detect"] = previous_module
+    vim.treesitter.get_parser = previous_parser
+    vim.treesitter.query.parse = previous_query
+    vim.api.nvim_buf_delete(buf, { force = true })
+    assert.is_true(ok)
+    assert.are.equal(1, #equations)
+    assert.are.equal("x", equations[1].text)
+    assert.are.same({ { 0, 0, 1, 0 }, { 0, 0, 1, 0 } }, ranges)
+  end)
+
+  it("keeps incremental results equivalent after line-count changes", function()
+    for _, edit in ipairs({
+      { start = 0, stop = 0, count = 100 },
+      { start = 0, stop = 0, count = 2 },
+      { start = 0, stop = 80, count = 0 },
+      { start = 60, stop = 80, count = 0 },
+      { start = 10, stop = 30, count = 90 },
+    }) do
+      local buf = vim.api.nvim_create_buf(false, true)
+      local lines = {}
+      for index = 1, 300 do
+        lines[index] = "plain"
+      end
+      lines[52] = "$$x$$"
+      lines[101] = "$$y$$"
+      lines[250] = "$$z$$"
+      vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+      local indexed = detect.scan(buf)
+      local replacement = {}
+      for index = 1, edit.count do
+        replacement[index] = "inserted"
+      end
+      vim.api.nvim_buf_set_lines(buf, edit.start, edit.stop, false, replacement)
+      local updated =
+        detect.update(indexed, buf, edit.start, edit.stop - 1, edit.start + edit.count - 1)
+      assert.are.same(detect.scan(buf), updated)
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end
+  end)
+
+  it("extends a long equation around inserted content", function()
+    local buf = vim.api.nvim_create_buf(false, true)
+    local lines, inserted = {}, {}
+    for index = 1, 200 do
+      lines[index] = "x"
+    end
+    for index = 1, 100 do
+      inserted[index] = "y"
+    end
+    lines[1], lines[151] = "$$", "$$"
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+    local indexed = detect.scan(buf)
+    vim.api.nvim_buf_set_lines(buf, 10, 10, false, inserted)
+    local updated = detect.update(indexed, buf, 10, 9, 109)
+    assert.are.same(detect.scan(buf), updated)
+    assert.are.equal(250, updated[1].end_row)
+    vim.api.nvim_buf_delete(buf, { force = true })
+  end)
+
+  it("does not extend a local rescan through adjacent equations", function()
+    local buf = vim.api.nvim_create_buf(false, true)
+    local lines = {}
+    for index = 1, 1000 do
+      lines[index] = index % 2 == 0 and "$$x$$" or "paragraph"
+    end
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+    local indexed = detect.scan(buf)
+    vim.api.nvim_buf_set_lines(buf, 0, 1, false, { "edited" })
+    local previous_scan = detect.scan_range
+    local last_row
+    detect.scan_range = function(buffer, first, last)
+      last_row = last
+      return previous_scan(buffer, first, last)
+    end
+    local ok, updated = pcall(detect.update, indexed, buf, 0, 0, 0)
+    detect.scan_range = previous_scan
+    assert.is_true(ok)
+    assert.is_true(last_row <= 52)
+    assert.are.same(detect.scan(buf), updated)
+    vim.api.nvim_buf_delete(buf, { force = true })
   end)
 
   it("finds bracket display math blocks", function()
@@ -220,6 +440,16 @@ describe("render_latex.detect", function()
     assert.are.equal("z^2", equations[2].text)
     assert.is_true(equations[1].quoted)
     assert.is_true(equations[2].quoted)
+  end)
+
+  it("keeps single-line quoted equations normalized and marked as quoted", function()
+    local buf = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "> $$ x^2 $$" })
+    local equations = detect.scan(buf)
+    vim.api.nvim_buf_delete(buf, { force = true })
+    assert.are.equal(1, #equations)
+    assert.are.equal("x^2", equations[1].text)
+    assert.is_true(equations[1].quoted)
   end)
 
   it("marks regular display math as unquoted", function()
@@ -1270,7 +1500,7 @@ describe("render_latex.install", function()
     end
     vim.system = function(command, opts, callback)
       assert.are.same(
-        { "cargo", "build", "--release", "--package", "render-latex-worker" },
+        { "cargo", "build", "--locked", "--release", "--package", "render-latex-worker" },
         command
       )
       assert.are.equal(vim.fs.normalize(util.root()), vim.fs.normalize(opts.cwd))
@@ -1541,6 +1771,19 @@ describe("render_latex.install", function()
 end)
 
 describe("render_latex.setup", function()
+  it("preserves user options when the plugin entrypoint loads", function()
+    render_latex.setup({ install = { auto = false }, render = { inline = "highlight" } })
+
+    dofile("plugin/render_latex.lua")
+
+    local auto = config.install.auto
+    local inline = config.render.inline
+    render_latex.setup({ install = { auto = false } })
+
+    assert.is_false(auto)
+    assert.are.equal("highlight", inline)
+  end)
+
   it("defers automatic install until user setup options are applied", function()
     local previous_ensure = install.ensure_installed_async
     local auto_values = {}
@@ -2661,6 +2904,29 @@ describe("render_latex.image_backend", function()
     assert.is_truthy(backend)
     assert.is_false(image_backend.status().kitty_probing)
   end)
+
+  it("accepts the Neovim 0.10 TermResponse string shape", function()
+    local sent = {}
+    config.setup({ image = { backend = "kitty" } })
+    vim.env.KITTY_WINDOW_ID = nil
+    vim.env.WEZTERM_EXECUTABLE = nil
+    vim.env.GHOSTTY_RESOURCES_DIR = nil
+    vim.env.TERM = "xterm-direct"
+    vim.env.TERM_PROGRAM = "unknown"
+    vim.env.TMUX = nil
+    vim.api.nvim_ui_send = function(sequence)
+      sent[#sent + 1] = sequence
+    end
+
+    image_backend.get()
+    local request_id = sent[1]:match("\027_Gi=(%d+),")
+    vim.api.nvim_exec_autocmds("TermResponse", {
+      data = ("\027_Gi=%s;OK\027\\"):format(request_id),
+    })
+
+    assert.is_truthy(image_backend.get())
+    assert.is_false(image_backend.status().kitty_probing)
+  end)
 end)
 
 describe("render_latex.image_backends.kitty", function()
@@ -2759,7 +3025,69 @@ describe("render_latex.install", function()
 end)
 
 describe("render_latex.worker", function()
-  it("times out pending requests so renders can retry", function()
+  it("discards queued output from a replaced worker", function()
+    local previous_spawn, previous_pipe = vim.uv.spawn, vim.uv.new_pipe
+    local previous_executable = vim.fn.executable
+    local pipes, writes = {}, {}
+    local function fake_handle()
+      local handle = { closed = false }
+      function handle:is_closing()
+        return self.closed
+      end
+      function handle:close()
+        self.closed = true
+      end
+      function handle:read_start(callback)
+        self.reader = callback
+      end
+      function handle:write(frame, callback)
+        writes[#writes + 1] = vim.json.decode(frame:match("\r\n\r\n(.*)"))
+        callback(nil)
+        return true
+      end
+      return handle
+    end
+    vim.uv.new_pipe = function()
+      local pipe = fake_handle()
+      pipes[#pipes + 1] = pipe
+      return pipe
+    end
+    vim.uv.spawn = function()
+      return fake_handle(), 123
+    end
+    vim.fn.executable = function()
+      return 1
+    end
+    config.setup({ worker = { bin = "/tmp/render-latex-worker-generation" } })
+    local done, response, response_error
+    local ok, err = pcall(function()
+      worker.request("ping", {}, function() end)
+      pipes[2].reader(nil, "Content-Length: 100000\r\n\r\n{")
+      worker.stop()
+      worker.request("ping", {}, function(result, failure)
+        response, response_error, done = result, failure, true
+      end)
+      pipes[2].reader(nil, "stale output after restart")
+      pipes[3].reader(nil, "old diagnostic")
+      local body = vim.json.encode({ id = writes[#writes].id, result = { diagnostics = "pong" } })
+      pipes[5].reader(nil, ("Content-Length: %d\r\n\r\n%s"):format(#body, body))
+      assert.is_true(vim.wait(1000, function()
+        return done
+      end))
+      assert.is_nil(response_error)
+      assert.are.equal("pong", response.diagnostics)
+      assert.are.equal(0, worker.status().pending)
+    end)
+    worker.stop()
+    config.setup()
+    vim.uv.spawn, vim.uv.new_pipe = previous_spawn, previous_pipe
+    vim.fn.executable = previous_executable
+    if not ok then
+      error(err)
+    end
+  end)
+
+  it("completes failed and timed out requests", function()
     local previous_spawn = vim.uv.spawn
     local previous_pipe = vim.uv.new_pipe
     local previous_executable = vim.fn.executable
@@ -2779,6 +3107,7 @@ describe("render_latex.worker", function()
           if callback ~= nil then
             callback(nil)
           end
+          return true
         end,
       }
     end
@@ -2802,6 +3131,22 @@ describe("render_latex.worker", function()
       return callback_err ~= nil
     end)
 
+    local pipe_count = 0
+    local immediate_err
+    vim.uv.new_pipe = function()
+      pipe_count = pipe_count + 1
+      local pipe = fake_handle()
+      if pipe_count == 1 then
+        pipe.write = function()
+          return nil, "closed"
+        end
+      end
+      return pipe
+    end
+    worker.request("render_batch", { items = {} }, function(_, err)
+      immediate_err = err
+    end)
+
     worker.set_request_timeout_for_tests(30000)
     worker.stop()
     config.setup()
@@ -2810,6 +3155,7 @@ describe("render_latex.worker", function()
     vim.fn.executable = previous_executable
 
     assert.are.equal("worker request timed out", callback_err)
+    assert.are.equal("worker write failed: closed", immediate_err)
     assert.is_false(worker.status().running)
     assert.are.equal(0, worker.status().pending)
   end)
@@ -2858,6 +3204,8 @@ describe("render_latex.renderer", function()
     local previous_readblob = vim.fn.readblob
     local previous_screenpos = vim.fn.screenpos
     local captured_opts
+    local test_buf
+    local live_images = {}
     local request_count = 0
     local set_count = 0
     local sep = "# %%[jupynvim:cell-sep]"
@@ -2873,12 +3221,25 @@ describe("render_latex.renderer", function()
     end
     image_backend.get = function()
       return {
-        set = function(_, set_opts)
+        set = function(data_or_id, set_opts)
           set_count = set_count + 1
           captured_opts = set_opts
-          return 1
+          if opts.set_error then
+            error("image placement failed")
+          end
+          local image_id = type(data_or_id) == "number" and data_or_id or set_count
+          live_images[image_id] = true
+          return image_id
         end,
-        del = function() end,
+        del = function(image_id)
+          if image_id == math.huge then
+            for id in pairs(live_images) do
+              live_images[id] = nil
+            end
+          else
+            live_images[image_id] = nil
+          end
+        end,
       },
         "nvim"
     end
@@ -2889,7 +3250,7 @@ describe("render_latex.renderer", function()
           error = nil,
           result = {
             width_px = opts.width_px or 500,
-            height_px = 20,
+            height_px = opts.height_px or 20,
             png_path = "/tmp/render-latex-jupynvim-test.png",
             cache_key = "jupynvim-test-" .. request_count,
           },
@@ -2900,18 +3261,22 @@ describe("render_latex.renderer", function()
       return 0, 3
     end
     viewport.visible_text_bounds = function()
+      if opts.bounds_unavailable then
+        return nil, nil
+      end
       return 1, 20
     end
     vim.fn.readblob = function()
       return "png"
     end
     vim.fn.screenpos = function()
-      return { row = 1, col = 1, endcol = 1, curscol = 1 }
+      return { row = opts.position_unavailable and 0 or 1, col = 1, endcol = 1, curscol = 1 }
     end
 
     local ok, err = pcall(function()
       config.setup(opts.config)
       local buf = vim.api.nvim_create_buf(true, true)
+      test_buf = buf
       vim.api.nvim_set_current_buf(buf)
       vim.bo[buf].filetype = "python"
       vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "$$", "x^2", "$$", "after" })
@@ -2922,13 +3287,21 @@ describe("render_latex.renderer", function()
       renderer.attach(buf)
       renderer.render(buf)
       local placed = vim.wait(1000, function()
-        return set_count > 0 and captured_opts ~= nil
+        return opts.expect_no_image and request_count > 0 or set_count > 0 and captured_opts ~= nil
       end, 10)
       assert.is_true(placed)
+      renderer.render(buf)
+      if opts.expect_no_image then
+        assert.are.equal(0, set_count)
+      end
 
-      assertions(buf, captured_opts)
+      assertions(buf, captured_opts, live_images)
     end)
 
+    if test_buf ~= nil and vim.api.nvim_buf_is_valid(test_buf) then
+      renderer.detach(test_buf)
+      vim.api.nvim_buf_delete(test_buf, { force = true })
+    end
     package.loaded["jupynvim.notebook"] = previous_notebook
     image_backend.status = previous_backend_status
     image_backend.get = previous_backend_get
@@ -2949,6 +3322,90 @@ describe("render_latex.renderer", function()
     assert.is_truthy(opts.foreground)
     assert.is_truthy(opts.foreground_source)
     assert.is_true(opts.font_size > 0)
+  end)
+
+  it("reveals raw equations when image placement fails", function()
+    with_jupynvim_render({ set_error = true }, function(buf)
+      local marks = vim.api.nvim_buf_get_extmarks(buf, config.ns, 0, -1, { details = true })
+      for _, mark in ipairs(marks) do
+        assert.is_nil(mark[4].conceal)
+      end
+    end)
+  end)
+
+  it("reveals source when image geometry prevents placement and recovers after resizing", function()
+    for _, options in ipairs({
+      { height_px = 800 },
+      { position_unavailable = true },
+      { bounds_unavailable = true },
+    }) do
+      options.expect_no_image = true
+      with_jupynvim_render(options, function(buf)
+        local marks = vim.api.nvim_buf_get_extmarks(buf, config.ns, 0, -1, { details = true })
+        for _, mark in ipairs(marks) do
+          assert.is_nil(mark[4].conceal)
+          assert.is_nil(mark[4].virt_lines)
+        end
+        vim.fn.screenpos = function()
+          return { row = 1, col = 1 }
+        end
+        viewport.visible_text_bounds = function()
+          return 1, 100
+        end
+        renderer.refresh_visible(buf)
+        local concealed = false
+        for _, mark in
+          ipairs(vim.api.nvim_buf_get_extmarks(buf, config.ns, 0, -1, { details = true }))
+        do
+          concealed = concealed or mark[4].conceal ~= nil
+        end
+        assert.is_true(concealed)
+      end)
+    end
+  end)
+
+  it("keeps successful split placements and reveals source if every split fails", function()
+    with_jupynvim_render({}, function(buf, _, live_images)
+      local split
+      local ok, err = pcall(function()
+        vim.cmd("vsplit")
+        split = vim.api.nvim_get_current_win()
+        viewport.visible_text_bounds = function(winid)
+          return 1, winid == split and 0 or 20
+        end
+        renderer.render(buf)
+        assert.are.equal(1, vim.tbl_count(live_images))
+        local function has_conceal()
+          for _, mark in
+            ipairs(vim.api.nvim_buf_get_extmarks(buf, config.ns, 0, -1, { details = true }))
+          do
+            if mark[4].conceal ~= nil then
+              return true
+            end
+          end
+          return false
+        end
+        assert.is_true(has_conceal())
+        viewport.visible_text_bounds = function()
+          return nil, nil
+        end
+        renderer.refresh_visible(buf)
+        assert.are.equal(0, vim.tbl_count(live_images))
+        assert.is_false(has_conceal())
+        viewport.visible_text_bounds = function()
+          return 1, 20
+        end
+        renderer.render(buf)
+        assert.are.equal(2, vim.tbl_count(live_images))
+        assert.is_true(has_conceal())
+      end)
+      if split ~= nil and vim.api.nvim_win_is_valid(split) then
+        vim.api.nvim_win_close(split, true)
+      end
+      if not ok then
+        error(err)
+      end
+    end)
   end)
 
   it("uses quote foreground for quoted display equations", function()

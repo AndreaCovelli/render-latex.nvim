@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 use std::fs;
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use anyhow::{Context, Result, anyhow};
-use ratex_layout::{LayoutOptions, layout, to_display_list};
+use ratex_layout::{LayoutOptions, layout, to_display_list, validate_layout};
 use ratex_parser::parser::parse;
 use ratex_render::{RenderOptions, render_to_png};
 use ratex_types::color::Color;
@@ -44,6 +44,13 @@ struct ResponseValue {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+struct DiskCacheEntry {
+    #[serde(flatten)]
+    value: ResponseValue,
+    png_sha256: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 struct RenderParams {
     formula: String,
     #[serde(default = "default_true")]
@@ -70,6 +77,7 @@ struct RenderBatchParams {
 struct CacheEntry {
     value: ResponseValue,
     last_used: u64,
+    file_stamp: Option<(SystemTime, u64)>,
 }
 
 struct Worker {
@@ -82,6 +90,8 @@ struct Worker {
 const MAX_MEMORY_CACHE_ENTRIES: usize = 256;
 const MAX_DISK_CACHE_ENTRIES: usize = 2048;
 const DISK_PRUNE_INTERVAL: u64 = 32;
+const RENDER_CACHE_VERSION: &str = "ratex-7d9f9a3-cache2";
+const MAX_CACHED_PNG_BYTES: u64 = 128 * 1024 * 1024;
 
 fn default_true() -> bool {
     true
@@ -110,7 +120,9 @@ impl Worker {
     fn cache_get(&mut self, cache_key: &str) -> Option<ResponseValue> {
         let tick = self.next_tick();
         self.memory_cache.get_mut(cache_key).and_then(|entry| {
-            if Path::new(&entry.value.png_path).exists() {
+            if entry.file_stamp.is_some()
+                && entry.file_stamp == png_file_stamp(&entry.value.png_path)
+            {
                 entry.last_used = tick;
                 Some(entry.value.clone())
             } else {
@@ -124,6 +136,7 @@ impl Worker {
         self.memory_cache.insert(
             cache_key,
             CacheEntry {
+                file_stamp: png_file_stamp(&value.png_path),
                 value,
                 last_used: tick,
             },
@@ -197,7 +210,7 @@ impl Worker {
             scale: Some(1.0),
             theme_fingerprint: Some("warmup".to_string()),
         };
-        let _ = self.render(params)?;
+        let _ = render_formula(&params)?;
         Ok(())
     }
 
@@ -207,36 +220,12 @@ impl Worker {
             return Ok(cached);
         }
 
-        if let Some(cached) = self.load_disk_cache(&cache_key)? {
+        if let Some(cached) = self.load_disk_cache(&cache_key) {
             self.cache_insert(cache_key.clone(), cached.clone());
             return Ok(cached);
         }
 
-        let foreground = parse_color(params.foreground_color.as_deref().unwrap_or("#ffffff"))?;
-        let background = parse_color(params.background.as_deref().unwrap_or("transparent"))?;
-        let ast = parse(&params.formula).map_err(|err| anyhow!(err.to_string()))?;
-        let options = LayoutOptions {
-            style: if params.display_mode {
-                MathStyle::Display
-            } else {
-                MathStyle::Text
-            },
-            color: foreground,
-            ..LayoutOptions::default()
-        };
-        let layout_box = layout(&ast, &options);
-        let display_list = to_display_list(&layout_box);
-        let png = render_to_png(
-            &display_list,
-            &RenderOptions {
-                font_size: params.font_size.unwrap_or(34.0),
-                padding: params.padding.unwrap_or(10.0),
-                background_color: background,
-                font_dir: String::new(),
-                device_pixel_ratio: params.scale.unwrap_or(1.5),
-            },
-        )
-        .map_err(|err| anyhow!(err))?;
+        let png = render_formula(&params)?;
 
         let png_path = self.cache_dir.join(format!("{}.png", cache_key));
         let metadata_path = self.cache_dir.join(format!("{}.json", cache_key));
@@ -251,7 +240,11 @@ impl Worker {
             diagnostics: None,
         };
 
-        fs::write(&metadata_path, serde_json::to_vec(&response)?)?;
+        let entry = DiskCacheEntry {
+            value: response.clone(),
+            png_sha256: hex::encode(Sha256::digest(&png)),
+        };
+        fs::write(&metadata_path, serde_json::to_vec(&entry)?)?;
         self.cache_insert(cache_key, response.clone());
         self.maybe_prune_disk_cache()?;
 
@@ -284,19 +277,43 @@ impl Worker {
         })
     }
 
-    fn load_disk_cache(&self, cache_key: &str) -> Result<Option<ResponseValue>> {
+    fn load_disk_cache(&self, cache_key: &str) -> Option<ResponseValue> {
         let metadata_path = self.cache_dir.join(format!("{}.json", cache_key));
-        if !metadata_path.exists() {
-            return Ok(None);
+        let bytes = fs::read(metadata_path).ok()?;
+        let entry: DiskCacheEntry = serde_json::from_slice(&bytes).ok()?;
+        let value = entry.value;
+        let png_path = self.cache_dir.join(format!("{}.png", cache_key));
+        if value.cache_key != cache_key
+            || Path::new(&value.png_path) != png_path
+            || !cached_png_valid(&value, &entry.png_sha256)
+        {
+            return None;
         }
-
-        let bytes = fs::read(metadata_path)?;
-        let value = serde_json::from_slice::<ResponseValue>(&bytes)?;
-        if !Path::new(&value.png_path).exists() {
-            return Ok(None);
-        }
-        Ok(Some(value))
+        Some(value)
     }
+}
+
+fn png_file_stamp(path: &str) -> Option<(SystemTime, u64)> {
+    let metadata = fs::metadata(path).ok()?;
+    Some((metadata.modified().ok()?, metadata.len()))
+}
+
+fn cached_png_valid(value: &ResponseValue, expected_digest: &str) -> bool {
+    let Ok(file) = fs::File::open(&value.png_path) else {
+        return false;
+    };
+    let mut bytes = Vec::new();
+    if file
+        .take(MAX_CACHED_PNG_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .is_err()
+        || bytes.len() as u64 > MAX_CACHED_PNG_BYTES
+        || hex::encode(Sha256::digest(&bytes)) != expected_digest
+    {
+        return false;
+    }
+    // Verify the stored PNG bytes without allocating or decoding their pixel buffer.
+    png_dimensions(&bytes).is_ok_and(|size| size == (value.width_px, value.height_px))
 }
 
 fn resolve_cache_dir() -> Result<PathBuf> {
@@ -308,6 +325,8 @@ fn resolve_cache_dir() -> Result<PathBuf> {
         PathBuf::from(xdg)
     } else if let Ok(home) = std::env::var("HOME") {
         PathBuf::from(home).join(".cache")
+    } else if let Ok(localappdata) = std::env::var("LocalAppData") {
+        PathBuf::from(localappdata)
     } else {
         return Err(anyhow!("unable to resolve cache directory"));
     };
@@ -321,8 +340,38 @@ fn build_cache_key(params: &RenderParams) -> Result<String> {
     let json = serde_json::to_vec(params)?;
     let mut hasher = Sha256::new();
     hasher.update(env!("CARGO_PKG_VERSION").as_bytes());
+    hasher.update(RENDER_CACHE_VERSION.as_bytes());
     hasher.update(json);
     Ok(hex::encode(hasher.finalize()))
+}
+
+fn render_formula(params: &RenderParams) -> Result<Vec<u8>> {
+    let foreground = parse_color(params.foreground_color.as_deref().unwrap_or("#ffffff"))?;
+    let background = parse_color(params.background.as_deref().unwrap_or("transparent"))?;
+    let ast = parse(&params.formula).map_err(|err| anyhow!(err.to_string()))?;
+    let options = LayoutOptions {
+        style: if params.display_mode {
+            MathStyle::Display
+        } else {
+            MathStyle::Text
+        },
+        color: foreground,
+        ..LayoutOptions::default()
+    };
+    let layout_box = layout(&ast, &options);
+    validate_layout(&layout_box).map_err(|err| anyhow!(err))?;
+    let display_list = to_display_list(&layout_box);
+    render_to_png(
+        &display_list,
+        &RenderOptions {
+            font_size: params.font_size.unwrap_or(34.0),
+            padding: params.padding.unwrap_or(10.0),
+            background_color: background,
+            font_dir: String::new(),
+            device_pixel_ratio: params.scale.unwrap_or(1.5),
+        },
+    )
+    .map_err(|err| anyhow!(err))
 }
 
 fn parse_color(value: &str) -> Result<Color> {
@@ -478,4 +527,172 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn render_params(formula: &str) -> RenderParams {
+        RenderParams {
+            formula: formula.to_string(),
+            display_mode: true,
+            foreground_color: Some("#ffffff".to_string()),
+            background: Some("transparent".to_string()),
+            font_size: Some(20.0),
+            padding: Some(2.0),
+            scale: Some(1.0),
+            theme_fingerprint: None,
+        }
+    }
+
+    #[test]
+    fn reads_framed_requests() {
+        let body = br#"{"id":7,"method":"ping","params":{}}"#;
+        let frame = format!(
+            "Content-Length: {}\r\n\r\n{}",
+            body.len(),
+            String::from_utf8_lossy(body)
+        );
+        let request = read_message(&mut io::Cursor::new(frame)).unwrap().unwrap();
+
+        assert_eq!(request.id, 7);
+        assert_eq!(request.method, "ping");
+    }
+
+    #[test]
+    fn renders_transparent_pngs() {
+        let png = render_formula(&render_params(r"\frac{1}{2} + \sqrt{x}")).unwrap();
+        let (width, height) = png_dimensions(&png).unwrap();
+
+        assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
+        assert!(width > 0);
+        assert!(height > 0);
+    }
+
+    #[test]
+    fn rejects_excessive_layout_before_display_list_expansion() {
+        let error = render_formula(&render_params(
+            r"\begin{array}{c:c}\rule{1pt}{1000000000em}&x\end{array}",
+        ))
+        .unwrap_err();
+        assert!(error.to_string().contains("Layout resource limit exceeded"));
+    }
+
+    struct TestCache(PathBuf);
+
+    impl Drop for TestCache {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn test_worker() -> (Worker, TestCache) {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "render-latex-test-{}-{}",
+            std::process::id(),
+            NEXT_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let worker = Worker {
+            cache_dir: dir.clone(),
+            memory_cache: HashMap::new(),
+            access_tick: 0,
+            disk_prune_tick: 0,
+        };
+        (worker, TestCache(dir))
+    }
+
+    #[test]
+    fn regenerates_corrupt_disk_metadata() {
+        let (mut worker, _cache) = test_worker();
+        let first = worker.render(render_params("x")).unwrap();
+        worker.memory_cache.clear();
+        let path = worker.cache_dir.join(format!("{}.json", first.cache_key));
+        fs::write(&path, b"{broken").unwrap();
+
+        let second = worker.render(render_params("x")).unwrap();
+        assert_eq!(first.cache_key, second.cache_key);
+        let restored: ResponseValue = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        assert_eq!(restored.cache_key, first.cache_key);
+    }
+
+    #[test]
+    fn regenerates_corrupt_pngs_in_memory_and_disk_caches() {
+        let (mut worker, _cache) = test_worker();
+        let first = worker.render(render_params("x")).unwrap();
+        let original = fs::read(&first.png_path).unwrap();
+        for memory_hit in [true, false] {
+            if !memory_hit {
+                worker.memory_cache.clear();
+            }
+            fs::write(&first.png_path, b"not a PNG").unwrap();
+            let restored = worker.render(render_params("x")).unwrap();
+            assert_eq!(fs::read(restored.png_path).unwrap(), original);
+        }
+    }
+
+    #[test]
+    fn regenerates_pngs_with_valid_headers_but_truncated_pixels() {
+        let (mut worker, _cache) = test_worker();
+        let first = worker.render(render_params("x")).unwrap();
+        let original = fs::read(&first.png_path).unwrap();
+        worker.memory_cache.clear();
+        fs::write(&first.png_path, &original[..original.len() / 2]).unwrap();
+        worker.render(render_params("x")).unwrap();
+        assert_eq!(fs::read(first.png_path).unwrap(), original);
+    }
+
+    #[test]
+    fn regenerates_same_length_corruption_and_mismatched_metadata() {
+        let (mut worker, _cache) = test_worker();
+        let first = worker.render(render_params("x")).unwrap();
+        let original = fs::read(&first.png_path).unwrap();
+        let mut damaged = original.clone();
+        let middle = damaged.len() / 2;
+        damaged[middle] ^= 1;
+        worker.memory_cache.clear();
+        fs::write(&first.png_path, damaged).unwrap();
+        worker.render(render_params("x")).unwrap();
+        assert_eq!(fs::read(&first.png_path).unwrap(), original);
+
+        let path = worker.cache_dir.join(format!("{}.json", first.cache_key));
+        let mut metadata: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        metadata["width_px"] = json!(first.width_px + 1);
+        fs::write(&path, serde_json::to_vec(&metadata).unwrap()).unwrap();
+        worker.memory_cache.clear();
+        let restored = worker.render(render_params("x")).unwrap();
+        let metadata: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(restored.width_px, first.width_px);
+        assert_eq!(metadata["width_px"], first.width_px);
+        assert!(
+            serde_json::to_value(restored)
+                .unwrap()
+                .get("png_sha256")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn regenerates_cache_entries_without_checksums() {
+        let (mut worker, _cache) = test_worker();
+        let first = worker.render(render_params("x")).unwrap();
+        let path = worker.cache_dir.join(format!("{}.json", first.cache_key));
+        fs::write(&path, serde_json::to_vec(&first).unwrap()).unwrap();
+        worker.memory_cache.clear();
+        worker.render(render_params("x")).unwrap();
+        let metadata: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        let png = fs::read(&first.png_path).unwrap();
+        assert_eq!(metadata["png_sha256"], hex::encode(Sha256::digest(png)));
+    }
+
+    #[test]
+    fn rejects_invalid_colors() {
+        let mut params = render_params("x");
+        params.foreground_color = Some("not-a-color".to_string());
+
+        assert!(render_formula(&params).is_err());
+    }
 }

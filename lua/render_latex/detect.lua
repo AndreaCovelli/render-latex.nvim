@@ -2,6 +2,7 @@ local Util = require("render_latex.util")
 
 local M = {}
 local unpack = table.unpack or unpack
+local contexts = {}
 
 local ok_query, latex_block_query = pcall(
   vim.treesitter.query.parse,
@@ -17,6 +18,9 @@ end
 local function normalize_text(text)
   local trimmed = vim.trim(text)
 
+  if trimmed:sub(1, 2) == "$$" and trimmed:sub(-2) == "$$" then
+    return vim.trim(trimmed:sub(3, -3))
+  end
   if trimmed:sub(1, 2) == "\\[" and trimmed:sub(-2) == "\\]" then
     local lines = vim.split(trimmed, "\n", { plain = true })
     if #lines >= 2 then
@@ -263,28 +267,44 @@ local function pipe_table_rows(lines, ignored)
   return rows
 end
 
-local function scan_context(bufnr, end_row)
-  local end_index = -1
-  if end_row ~= nil then
-    end_index = math.min(vim.api.nvim_buf_line_count(bufnr), end_row + 1)
+local function scan_context(bufnr)
+  local tick = vim.api.nvim_buf_get_changedtick(bufnr)
+  local cached = contexts[bufnr]
+  if cached ~= nil and cached.tick == tick then
+    return cached
   end
-  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, end_index, false)
+  if cached == nil then
+    vim.api.nvim_buf_attach(bufnr, false, {
+      on_detach = function()
+        contexts[bufnr] = nil
+      end,
+      on_reload = function()
+        if contexts[bufnr] ~= nil then
+          contexts[bufnr].tick = -1
+        end
+      end,
+    })
+  end
+  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
   local ignored = ignored_rows(lines)
-  return {
+  local context = {
+    tick = tick,
     lines = lines,
     ignored = ignored,
     table_rows = pipe_table_rows(lines, ignored),
   }
+  contexts[bufnr] = context
+  return context
 end
 
-local function markdown_inline_parser(bufnr)
+local function markdown_inline_parser(bufnr, range)
   local ok, parser = pcall(vim.treesitter.get_parser, bufnr, "markdown")
   if not ok or parser == nil then
     return nil
   end
 
   local parsed = pcall(function()
-    parser:parse(true)
+    parser:parse(range)
   end)
   if not parsed then
     return nil
@@ -292,13 +312,6 @@ local function markdown_inline_parser(bufnr)
 
   local child = parser:children().markdown_inline
   if child == nil then
-    return nil
-  end
-
-  parsed = pcall(function()
-    child:parse(true)
-  end)
-  if not parsed then
     return nil
   end
 
@@ -310,14 +323,36 @@ local function treesitter_equations(bufnr, context, start_row, end_row)
     return {}
   end
 
-  local parser = markdown_inline_parser(bufnr)
+  local needs_parser = false
+  for row = start_row + 1, math.min(#context.lines, end_row + 1) do
+    if not context.ignored[row] then
+      local text = math_line(context.lines[row])
+      local _, dollars = text:gsub("%$%$", "")
+      if dollars > 0 and text ~= "$$" then
+        if dollars ~= 2 or not text:match("^%$%$.*%$%$$") then
+          needs_parser = true
+          break
+        end
+      end
+      if text:find("\\[", 1, true) ~= nil and not text:match("^\\%[") then
+        needs_parser = true
+        break
+      end
+    end
+  end
+  -- The line scanners already handle standalone display delimiters.
+  if not needs_parser then
+    return {}
+  end
+  local range = { start_row, 0, end_row + 1, 0 }
+  local parser = markdown_inline_parser(bufnr, range)
   if parser == nil then
     return {}
   end
 
   local equations = {}
   local ok, trees = pcall(function()
-    return parser:parse(true)
+    return parser:parse(range)
   end)
   if not ok then
     return {}
@@ -638,7 +673,7 @@ function M.inline_range(bufnr, start_row, end_row)
     return {}
   end
 
-  return inline_items_in_range(scan_context(bufnr, end_row), start_row, end_row)
+  return inline_items_in_range(scan_context(bufnr), start_row, end_row)
 end
 
 ---@param bufnr integer
@@ -649,11 +684,7 @@ function M.inline_ranges(bufnr, ranges)
     return {}
   end
 
-  local max_end_row = 0
-  for _, range in ipairs(ranges) do
-    max_end_row = math.max(max_end_row, range.end_row)
-  end
-  local context = scan_context(bufnr, max_end_row)
+  local context = scan_context(bufnr)
   local items = {}
   local seen = {}
   for _, range in ipairs(ranges) do
@@ -724,6 +755,15 @@ function M.scan_range(bufnr, start_row, end_row)
   return sort_equations(equations)
 end
 
+local function changes_multiline_context(line)
+  return fence_marker(line) ~= nil
+    or vim.trim(line) == "---"
+    or line:find("%%", 1, true) ~= nil
+    or line:find("$$", 1, true) ~= nil
+    or line:find("\\[", 1, true) ~= nil
+    or line:find("\\]", 1, true) ~= nil
+end
+
 ---@param equations table[]
 ---@param bufnr integer
 ---@param start_row integer
@@ -731,33 +771,59 @@ end
 ---@param new_end_row integer
 ---@return table[]
 function M.update(equations, bufnr, start_row, old_end_row, new_end_row)
+  local previous = contexts[bufnr]
+  local tick = vim.api.nvim_buf_get_changedtick(bufnr)
+  if previous == nil or previous.tick ~= tick - 1 then
+    return M.scan(bufnr)
+  end
+  -- Delimiter edits can change the meaning of every later line.
+  for row = start_row + 1, old_end_row + 1 do
+    if changes_multiline_context(previous.lines[row] or "") then
+      return M.scan(bufnr)
+    end
+  end
+  for _, line in ipairs(vim.api.nvim_buf_get_lines(bufnr, start_row, new_end_row + 1, false)) do
+    if changes_multiline_context(line) then
+      return M.scan(bufnr)
+    end
+  end
   local line_count = vim.api.nvim_buf_line_count(bufnr)
   local line_delta = new_end_row - old_end_row
-  local rescan_start = math.max(0, start_row - 50)
-  local rescan_end = math.max(old_end_row, new_end_row) + 50
-
+  local mapped = {}
   for _, equation in ipairs(equations) do
-    if equation.end_row >= rescan_start - 1 and equation.start_row <= rescan_end + 1 then
-      rescan_start = math.min(rescan_start, math.max(0, equation.start_row - 1))
-      rescan_end = math.max(rescan_end, equation.end_row + 1)
+    local next_equation = equation
+    if line_delta ~= 0 and equation.end_row > old_end_row then
+      local first = equation.start_row
+      if first > old_end_row then
+        first = first + line_delta
+      end
+      local last = equation.end_row + line_delta
+      next_equation = vim.tbl_extend("force", equation, {
+        start_row = first,
+        end_row = last,
+        key = equation_key(first, last, equation.delimiter),
+      })
+    end
+    if next_equation.start_row >= 0 and next_equation.end_row < line_count then
+      mapped[#mapped + 1] = next_equation
+    end
+  end
+
+  local affected_start = math.max(0, start_row - 50)
+  local affected_end = math.min(line_count - 1, new_end_row + 50)
+  local rescan_start, rescan_end = affected_start, affected_end
+  -- Only intersect the original window; neighboring equations must not extend it to EOF.
+  for _, equation in ipairs(mapped) do
+    if equation.end_row >= affected_start and equation.start_row <= affected_end then
+      rescan_start = math.min(rescan_start, equation.start_row)
+      rescan_end = math.max(rescan_end, equation.end_row)
     end
   end
 
   local next_equations = {}
-  for _, equation in ipairs(equations) do
+  for _, equation in ipairs(mapped) do
     if equation.end_row < rescan_start or equation.start_row > rescan_end then
-      local next_equation = equation
-      if equation.start_row > old_end_row and line_delta ~= 0 then
-        next_equation = vim.tbl_extend("force", equation, {
-          start_row = equation.start_row + line_delta,
-          end_row = equation.end_row + line_delta,
-        })
-        next_equation.key =
-          equation_key(next_equation.start_row, next_equation.end_row, next_equation.delimiter)
-      end
-      if next_equation.start_row >= 0 and next_equation.end_row < line_count then
-        next_equations[#next_equations + 1] = next_equation
-      end
+      next_equations[#next_equations + 1] = equation
     end
   end
 

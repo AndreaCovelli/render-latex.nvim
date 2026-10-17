@@ -6,9 +6,33 @@ This project follows a practical changelog format inspired by [Keep a Changelog]
 
 ## Unreleased
 
+## 0.1.0-rc5 - 2026-10-17
+
 ### Changed
 
 - Added default-on live previews below focused display equations while editing, keeping raw LaTeX visible during edits.
+- Upgraded RaTeX to 0.1.15 (pinned revision `7d9f9a3`), and versioned the worker render cache to prevent stale output after renderer upgrades.
+- Made local, CI, and release worker builds use the committed Cargo lockfile.
+- Declared Rust 1.96 as the minimum toolchain for source builds; prebuilt worker installs do not require Rust.
+
+### Fixed
+
+- Added a `LocalAppData` cache-directory fallback for native Windows worker startup when `HOME` is unavailable (contributed by [tomried](https://github.com/tomried) in [#11](https://github.com/techwizrd/render-latex.nvim/pull/11)).
+- Kept equation positions correct after multi-line pastes, deletions, and replacements.
+- Reduced typing delays in notes with densely packed adjacent equations.
+- Revealed raw equations when images cannot fit in visible windows and restored rendering after resizing.
+- Ignored queued output from replaced worker processes to prevent request timeouts after restarts.
+- Rejected excessive equation layouts before expanding drawing commands, preventing worker allocation failures.
+- Rebuilt damaged cache metadata and PNG files using checksums, avoiding full pixel decoding on disk-cache hits. Existing cache entries regenerate once after the format update.
+- Updated distant equations after Markdown fence, frontmatter, comment, and display-delimiter edits.
+- Reduced editing stalls by caching scan context and avoiding unnecessary full-document Tree-sitter parsing.
+- Normalized fallback equation text without surrounding display delimiters, including single-line blockquotes.
+- Preserved user setup options when the plugin entrypoint loads after explicit setup.
+- Cleared stale Kitty image placements across tab, buffer, and window transitions.
+- Kept equation rendering active around plugin utility floats without leaving stale suppression state.
+- Preserved raw LaTeX when rendered images cannot be read, placed, or updated.
+- Accepted Kitty protocol responses from both Neovim 0.10 and newer Neovim event shapes.
+- Bounded retained worker stderr and handled synchronous worker pipe write failures without leaving requests pending.
 
 ## 0.1.0-rc4 - 2026-05-31
 

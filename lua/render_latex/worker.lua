@@ -4,6 +4,7 @@ local Util = require("render_latex.util")
 
 local M = {}
 local request_timeout_ms = 30000
+local stderr_limit = 4000
 
 local state = {
   handle = nil,
@@ -14,6 +15,7 @@ local state = {
   next_id = 1,
   pending = {},
   stderr_chunks = {},
+  stderr_size = 0,
   stopping = false,
   generation = 0,
 }
@@ -78,6 +80,7 @@ local function reset_state(notify_pending, reason)
   state.stderr = nil
   state.buffer = ""
   state.stderr_chunks = {}
+  state.stderr_size = 0
   state.stopping = false
 end
 
@@ -198,9 +201,14 @@ local function start_worker()
   state.stderr = stderr
 
   stdout:read_start(function(err, chunk)
+    if not active_process(handle, generation) then
+      return
+    end
     if err ~= nil then
       vim.schedule(function()
-        Util.error("render-latex worker stdout error: " .. err)
+        if active_process(handle, generation) then
+          Util.error("render-latex worker stdout error: " .. err)
+        end
       end)
       return
     end
@@ -208,15 +216,28 @@ local function start_worker()
       return
     end
     vim.schedule(function()
-      parse_messages(chunk)
+      if active_process(handle, generation) then
+        parse_messages(chunk)
+      end
     end)
   end)
 
   stderr:read_start(function(err, chunk)
-    if err ~= nil or chunk == nil then
+    if not active_process(handle, generation) or err ~= nil or chunk == nil then
       return
     end
     table.insert(state.stderr_chunks, chunk)
+    state.stderr_size = state.stderr_size + #chunk
+    while state.stderr_size > stderr_limit do
+      local excess = state.stderr_size - stderr_limit
+      local first = state.stderr_chunks[1]
+      if #first <= excess then
+        state.stderr_size = state.stderr_size - #table.remove(state.stderr_chunks, 1)
+      else
+        state.stderr_chunks[1] = first:sub(excess + 1)
+        state.stderr_size = stderr_limit
+      end
+    end
   end)
 
   return true, nil
@@ -253,16 +274,26 @@ function M.request(method, params, callback)
   })
   local frame = ("Content-Length: %d\r\n\r\n%s"):format(#message, message)
 
-  state.stdin:write(frame, function(err)
-    if err == nil then
-      return
-    end
-    vim.schedule(function()
-      if state.pending[id] ~= nil then
-        complete_pending(id, nil, "worker write failed: " .. tostring(err))
+  local call_ok, write_request, write_err = pcall(
+    state.stdin.write,
+    state.stdin,
+    frame,
+    function(err)
+      if err == nil then
+        return
       end
-    end)
-  end)
+      vim.schedule(function()
+        if state.pending[id] ~= nil then
+          complete_pending(id, nil, "worker write failed: " .. tostring(err))
+        end
+      end)
+    end
+  )
+  if not call_ok then
+    complete_pending(id, nil, "worker write failed: " .. tostring(write_request))
+  elseif write_request == nil then
+    complete_pending(id, nil, "worker write failed: " .. tostring(write_err or "unknown error"))
+  end
 end
 
 ---@param items table[]

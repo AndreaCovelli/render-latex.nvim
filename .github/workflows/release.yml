@@ -48,7 +48,12 @@ jobs:
         with:
           workspaces: .
       - name: Build worker
-        run: cargo build --release --package render-latex-worker
+        run: cargo build --locked --release --package render-latex-worker
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Smoke-test worker
+        run: python tests/worker_smoke.py "${{ matrix.binary }}"
       - name: Stage asset
         shell: bash
         run: cp "${{ matrix.binary }}" "${{ matrix.asset }}"
@@ -67,6 +72,25 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Prepare release notes
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          version = os.environ["RELEASE_TAG"].removeprefix("v")
+          lines = Path("CHANGELOG.md").read_text().splitlines()
+          start = next((i for i, line in enumerate(lines) if line.startswith(f"## {version} - ")), None)
+          if start is None:
+              raise SystemExit(f"No dated changelog entry for {version}")
+          end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
+          Path("release-notes.txt").write_text("\n".join(lines[start + 1:end]).strip() + "\n")
+          PY
       - uses: actions/download-artifact@v8
         with:
           path: dist
@@ -76,6 +100,9 @@ jobs:
       - name: Create GitHub release
         uses: softprops/action-gh-release@v3
         with:
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          fail_on_unmatched_files: true
+          body_path: release-notes.txt
           files: |
             dist/render-latex-worker-*
             dist/SHA256SUMS

@@ -922,6 +922,18 @@ local function update_image(bufnr, winid, equation, meta, backend, window, previ
   return true
 end
 
+local function clear_unplaced_display(bufnr, state, key, active_images, backend)
+  if state.marks[key] == nil then
+    return
+  end
+  for winid, keys in pairs(active_images) do
+    if keys[key] and state.images[winid] ~= nil and state.images[winid][key] ~= nil then
+      return
+    end
+  end
+  clear_equation_display(bufnr, key, backend, true)
+end
+
 local function cleanup_inactive(state, bufnr, active, active_images, backend)
   for key, mark_id in pairs(state.marks) do
     if not active[key] then
@@ -1043,6 +1055,7 @@ local function update_existing_visible(bufnr, indexed_equations, snapshot)
           end
         end
       end
+      clear_unplaced_display(bufnr, state, equation.key, active_images, backend)
     end
     cleanup_inactive(state, bufnr, active, active_images, backend)
   end)
@@ -1251,6 +1264,7 @@ function M.render(bufnr)
           end
         end
       end
+      clear_unplaced_display(bufnr, state, equation.key, active_images, backend)
     end
     cleanup_inactive(state, bufnr, active, active_images, backend)
   end)
