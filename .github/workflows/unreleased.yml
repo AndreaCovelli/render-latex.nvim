@@ -90,3 +90,10 @@ jobs:
           files: |
             dist/render-latex-worker-*
             dist/SHA256SUMS
+      - name: Move unreleased tag to published commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh api --method PATCH "repos/$GH_REPO/git/refs/tags/unreleased" \
+            -f sha="$GITHUB_SHA" -F force=true
