@@ -6,6 +6,10 @@ This project follows a practical changelog format inspired by [Keep a Changelog]
 
 ## Unreleased
 
+### Added
+
+- Inline math in conceal mode is now written as Unicode text instead of replacing only single symbols: hundreds of commands, multi-character sub- and superscripts (`x_{i,j}^{2}` → `xᵢ,ⱼ²`), math alphabets (`\mathbb{R}` → `ℝ`), accents (`\hat\theta` → `θ̂`), roots, `\not`, `\text`, and fractions (`\frac{a+b}{2}` → `(a+b)/2`). Each output character conceals one source character, so the raw LaTeX still appears when the cursor is on it.
+
 ### Fixed
 
 - Read the terminal cell size in pixels instead of assuming 10x20, so images and the formula font match the terminal and are not upscaled on high-density displays. `image.cell_width_px` and `image.cell_height_px` now override the detected size and remain the fallback.
