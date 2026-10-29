@@ -3911,8 +3911,19 @@ describe("render_latex.renderer", function()
     end
 
     assert.are.same({ 17, 34 }, requests)
-    assert.are.same({ width = 17, height = 4 }, placements[1])
-    assert.are.same({ width = 10, height = 2 }, placements[2])
+    assert.are.same({ width = 12, height = 3 }, placements[1])
+    assert.are.same({ width = 7, height = 2 }, placements[2])
+  end)
+
+  it("sizes images in cells by their unscaled pixel size", function()
+    with_jupynvim_render({
+      width_px = 300,
+      height_px = 120,
+      config = { image = { cell_width_px = 10, cell_height_px = 20 }, render = { scale = 1.5 } },
+    }, function(_, captured_opts)
+      assert.are.equal(20, captured_opts.width)
+      assert.are.equal(4, captured_opts.height)
+    end)
   end)
 
   it("uses jupynvim cell margins and suppresses default labels", function()

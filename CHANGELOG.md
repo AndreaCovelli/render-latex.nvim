@@ -13,6 +13,7 @@ This project follows a practical changelog format inspired by [Keep a Changelog]
 ### Fixed
 
 - Read the terminal cell size in pixels instead of assuming 10x20, so images and the formula font match the terminal and are not upscaled on high-density displays. `image.cell_width_px` and `image.cell_height_px` now override the detected size and remain the fallback.
+- Sized equation images by their unscaled pixel size, so `render.scale` sharpens images instead of enlarging them by the same factor.
 - Moved the rolling `unreleased` tag after publishing worker assets so source archives match the published build.
 
 ## 0.1.0-rc5 - 2026-10-17
