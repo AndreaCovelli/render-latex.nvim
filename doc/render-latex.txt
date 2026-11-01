@@ -99,6 +99,7 @@ Common options:
     },
     image = {
       backend = "auto",      -- "nvim" or "kitty"
+      placeholders = "auto", -- true or false
     },
     install = {
       auto = true,
@@ -273,8 +274,20 @@ Image options:
 `image.backend`          Image backend: `"auto"`, `"nvim"`, or `"kitty"`.
                          Default: `"auto"`.
 
+                                           *render-latex-image.placeholders*
+`image.placeholders`     Draw Kitty images with Unicode placeholders: text cells
+                         that the terminal replaces with the image. Images then
+                         move with the text, stay inside their window, stay
+                         visible under floating windows, and survive tmux
+                         pane, window, and session switches. Needs
+                         'termguicolors', because the image id is the cell's
+                         foreground color. `"auto"` uses them everywhere except
+                         WezTerm, which does not support them. `false` places
+                         images at fixed screen positions instead. Default:
+                         `"auto"`.
+
                                                  *render-latex-image.zindex*
-`image.zindex`           Z-index for image placement. Default: `60`.
+`image.zindex`           Z-index for fixed image placements. Default: `60`.
 
                                           *render-latex-image.cell_width_px*
 `image.cell_width_px`    Terminal cell width in pixels, used to size images and,
@@ -447,7 +460,9 @@ For image rendering in tmux:
   set -g default-terminal "tmux-256color"
 <
 
-Session-local cleanup hooks are opt-in:
+With |render-latex-image.placeholders| (the default outside WezTerm), images
+belong to the pane's text, so tmux hides and redraws them itself and no cleanup
+hooks are needed. With fixed placements, session-local cleanup hooks are opt-in:
 >
   require("render_latex").setup({
     tmux = { install_cleanup_hooks = true },
