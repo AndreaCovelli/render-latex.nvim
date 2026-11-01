@@ -3520,7 +3520,7 @@ describe("render_latex.renderer", function()
     local ok, err = pcall(function()
       config.setup({
         render_modes = { vim.api.nvim_get_mode().mode },
-        render = { equation_labels = false },
+        render = { equation_labels = false, scale = 1 },
         image = { cell_width_px = 10, cell_height_px = 20 },
       })
       test_buf = vim.api.nvim_create_buf(true, true)
