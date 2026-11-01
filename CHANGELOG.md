@@ -6,6 +6,10 @@ This project follows a practical changelog format inspired by [Keep a Changelog]
 
 ## Unreleased
 
+### Changed
+
+- Drew Kitty images with Unicode placeholders by default, so display equations move with the text, stay inside their window and under floating windows, and no longer disappear and re-render when a tmux pane loses focus. Set `image.placeholders = false` to keep fixed placements. WezTerm, which lacks placeholder support, keeps fixed placements automatically.
+
 ### Fixed
 
 - Moved the rolling `unreleased` tag after publishing worker assets so source archives match the published build.

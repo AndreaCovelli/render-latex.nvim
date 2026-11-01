@@ -93,6 +93,7 @@ local function register_autocmds()
   vim.api.nvim_create_autocmd("ColorScheme", {
     group = Config.augroup,
     callback = function()
+      Renderer.refresh_highlights()
       if update_transient_ui_suppression(false) then
         queue_visible_buffers()
       end
@@ -170,7 +171,12 @@ local function register_autocmds()
 
   vim.api.nvim_create_autocmd({ "FocusLost", "VimSuspend" }, {
     group = Config.augroup,
-    callback = function()
+    callback = function(args)
+      -- Images placed at screen positions would stay painted over whatever replaces
+      -- this pane. Placeholder images are text to tmux and go away with the pane.
+      if args.event == "FocusLost" and Renderer.uses_placeholders() then
+        return
+      end
       Renderer.clear_all()
     end,
   })
