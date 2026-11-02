@@ -181,11 +181,24 @@ local function register_autocmds()
     end,
   })
 
+  -- A terminal that attaches to tmux has none of the placeholder images sent before it.
+  -- Attaching focuses the pane unless another focused client is already there, and a
+  -- client of another size resizes it, so check on both. Record the clients now.
+  local Tmux = require("render_latex.tmux")
+  Tmux.client_attached()
+  local function resend_if_client_attached()
+    if Renderer.uses_placeholders() and Tmux.client_attached() then
+      Renderer.resend_images()
+    end
+  end
+
   vim.api.nvim_create_autocmd({ "FocusGained", "VimResume" }, {
     group = Config.augroup,
     callback = function(args)
       if args.event == "VimResume" then
         require("render_latex.cell_size").reset()
+      else
+        resend_if_client_attached()
       end
       update_transient_ui_suppression(true)
     end,
@@ -197,6 +210,7 @@ local function register_autocmds()
     group = Config.augroup,
     callback = function()
       require("render_latex.cell_size").reset()
+      resend_if_client_attached()
       update_transient_ui_suppression(true)
     end,
   })

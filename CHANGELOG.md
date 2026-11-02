@@ -19,6 +19,7 @@ This project follows a practical changelog format inspired by [Keep a Changelog]
 - Read the terminal cell size in pixels instead of assuming 10x20, so images and the formula font match the terminal and are not upscaled on high-density displays. `image.cell_width_px` and `image.cell_height_px` now override the detected size and remain the fallback.
 - Sized equation images by their unscaled pixel size, so `render.scale` sharpens images instead of enlarging them by the same factor.
 - Concealed inline math in the prefetched lines around the viewport and refreshed it as soon as scrolling passes them, so lines no longer show raw LaTeX and reflow just after scrolling into view.
+- Sent placeholder images again when another tmux client attaches, checked when the pane gains focus or the window resizes, so a terminal that attaches later shows the equations rendered before it.
 - Moved the rolling `unreleased` tag after publishing worker assets so source archives match the published build.
 - Detected Kitty and Ghostty from the terminal tmux is attached to, so display math renders in tmux over SSH, where the environment doesn't name the terminal. Control-mode clients (`tmux -CC`) are recognized by their `TERM`, `xterm-kitty` or `xterm-ghostty`.
 
