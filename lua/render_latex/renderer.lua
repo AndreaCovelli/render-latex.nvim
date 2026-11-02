@@ -855,8 +855,11 @@ local function collect_window_snapshot(bufnr, viewport_state, prefetch)
     local text_top, text_bottom = Viewport.visible_text_bounds(winid)
     snapshot.winids[#snapshot.winids + 1] = winid
     snapshot.ranges[#snapshot.ranges + 1] = { top = top, bottom = bottom }
+    local width = vim.api.nvim_win_get_width(winid)
     snapshot.windows[winid] = {
-      width = vim.api.nvim_win_get_width(winid),
+      width = width,
+      -- The window's last screen column, where a right-aligned label ends
+      right_col = vim.fn.win_screenpos(winid)[2] + width - 1,
       text_top = text_top,
       text_bottom = text_bottom,
       cursor_row = vim.api.nvim_win_get_cursor(winid)[1] - 1,
@@ -920,12 +923,41 @@ local function clear_suppressed_label(context, bufnr, state, equation)
   end
 end
 
-local function update_label(context, bufnr, state, equation, number)
+local function update_label(context, bufnr, state, equation, number, right_fits)
   if should_suppress_label(context) then
     Annotations.clear_label(bufnr, Config.ns, state, equation.key)
     return
   end
-  Annotations.set_equation_label(bufnr, Config.ns, state, equation, number)
+  Annotations.set_equation_label(bufnr, Config.ns, state, equation, number, right_fits)
+end
+
+-- Columns the right-aligned label takes at the end of the equation's first row,
+-- with a space before it, or 0 when it has none.
+local function label_reserve(context, number)
+  local label = number ~= nil
+    and not should_suppress_label(context)
+    and Annotations.right_label(number)
+  return label and vim.fn.strdisplaywidth(label) + 1 or 0
+end
+
+-- The image's first screen column, centered in `width` columns from `start_col`, and
+-- moved left so it ends before the `reserve` columns at the right of the window. The
+-- second value is false when it can't move far enough without starting before
+-- `start_col`.
+local function image_col(start_col, width, image_width, right_col, reserve)
+  local col = start_col + math.max(0, math.floor((width - image_width) / 2))
+  if reserve <= 0 or right_col == nil then
+    return col, true
+  end
+  local last_col = right_col - reserve
+  if col + image_width - 1 <= last_col then
+    return col, true
+  end
+  local shifted = last_col - image_width + 1
+  if shifted >= start_col then
+    return shifted, true
+  end
+  return col, false
 end
 
 local function read_blob(state, equation, meta)
@@ -976,7 +1008,10 @@ local function update_virtual_image(bufnr, winid, equation, meta, backend)
   return true
 end
 
-local function update_image(bufnr, winid, equation, meta, backend, window, preview)
+-- Places the equation's image in a window. Over the source, `reserve` columns at the
+-- right end of the first row stay free for the label. Returns whether the image is
+-- placed, and false second when the image is too wide to leave that room.
+local function update_image(bufnr, winid, equation, meta, backend, window, preview, reserve)
   if not Util.win_is_valid(winid) then
     return false
   end
@@ -1009,7 +1044,8 @@ local function update_image(bufnr, winid, equation, meta, backend, window, previ
   local bounds = Sources.image_bounds(bufnr, winid, window, position)
   local width = math.max(1, bounds.width or window.width)
   local start_col = bounds.start_col or position.col
-  local col = start_col + math.max(0, math.floor((width - meta.width_cells) / 2))
+  local col, beside =
+    image_col(start_col, width, meta.width_cells, window.right_col, preview and 0 or (reserve or 0))
   local opts = {
     row = row,
     col = col,
@@ -1024,7 +1060,7 @@ local function update_image(bufnr, winid, equation, meta, backend, window, previ
       last_backend_warning = reason
       Util.warn(reason or "No image backend is available")
     end
-    return false
+    return false, beside
   end
   last_backend_warning = nil
 
@@ -1032,13 +1068,13 @@ local function update_image(bufnr, winid, equation, meta, backend, window, previ
   if image_id == nil then
     local blob = read_blob(state, equation, meta)
     if blob == nil then
-      return false
+      return false, beside
     end
 
     local ok, result = pcall(backend.set, blob, opts)
     if not ok then
       Util.warn(("Failed to place rendered equation image: %s"):format(result))
-      return false
+      return false, beside
     end
     state.images[winid][equation.key] = result
     state.placements[winid][equation.key] = placement_fingerprint
@@ -1050,18 +1086,20 @@ local function update_image(bufnr, winid, equation, meta, backend, window, previ
         pcall(backend.del, image_id)
         state.images[winid][equation.key] = nil
         state.placements[winid][equation.key] = nil
-        return false
+        return false, beside
       end
       state.placements[winid][equation.key] = placement_fingerprint
     end
   end
 
-  return true
+  return true, beside
 end
 
 -- The placeholder text for an equation, centered as the fixed placement would be in
--- the snapshot's primary window. Nil until that window holds the image.
-local function placeholder_grid(bufnr, equation, meta, backend, snapshot)
+-- the snapshot's primary window and kept clear of `reserve` label columns the same
+-- way. Nil until that window holds the image. `beside` is false when the image is too
+-- wide to leave room for the label.
+local function placeholder_grid(bufnr, equation, meta, backend, snapshot, reserve)
   local winid = snapshot.primary
   local state = get_buffer_state(bufnr)
   local handle = winid ~= nil and state.images[winid] and state.images[winid][equation.key]
@@ -1076,11 +1114,13 @@ local function placeholder_grid(bufnr, equation, meta, backend, snapshot)
   local bounds = Sources.image_bounds(bufnr, winid, window, { row = info.winrow, col = text_col })
   local width = math.max(1, bounds.width or window.width)
   local start_col = bounds.start_col or text_col
-  local offset = math.max(0, start_col - text_col + math.floor((width - meta.width_cells) / 2))
+  local col, beside = image_col(start_col, width, meta.width_cells, window.right_col, reserve)
+  local offset = math.max(0, col - text_col)
   local cells = meta.width_cells
   return {
     hl = placeholder_highlight(image_id),
     offset = offset,
+    beside = beside,
     layout = image_id .. "@" .. offset,
     row = function(row)
       return backend.placeholder_row(row, cells)
@@ -1089,7 +1129,9 @@ local function placeholder_grid(bufnr, equation, meta, backend, snapshot)
 end
 
 -- Shows a rendered equation in every window of the snapshot, below its source when
--- `preview` is set (live preview while editing), over it otherwise.
+-- `preview` is set (live preview while editing), over it otherwise. Over the source it
+-- then sets label `number`, without the right-aligned part when the image leaves no
+-- room for it.
 local function show_equation(
   bufnr,
   equation,
@@ -1098,14 +1140,26 @@ local function show_equation(
   snapshot,
   active_images,
   context,
-  preview
+  preview,
+  number
 )
+  local reserve = preview and 0 or label_reserve(context, number)
+  local right_fits = true
   local function place_images()
     for _, winid in ipairs(snapshot.winids) do
-      if update_image(bufnr, winid, equation, meta, backend, snapshot.windows[winid], preview) then
+      local window = snapshot.windows[winid]
+      local placed, beside =
+        update_image(bufnr, winid, equation, meta, backend, window, preview, reserve)
+      if placed then
         active_images[winid] = active_images[winid] or {}
         active_images[winid][equation.key] = true
       end
+      right_fits = right_fits and beside ~= false
+    end
+  end
+  local function label()
+    if not preview and number ~= nil then
+      update_label(context, bufnr, get_buffer_state(bufnr), equation, number, right_fits)
     end
   end
 
@@ -1116,20 +1170,22 @@ local function show_equation(
       ensure_mark(bufnr, equation, meta, context)
     end
     place_images()
+    label()
     return
   end
 
   -- The placeholder text needs the image id, so the image comes first
   place_images()
-  local grid = placeholder_grid(bufnr, equation, meta, backend, snapshot)
-  if grid == nil then
-    return
+  local grid = placeholder_grid(bufnr, equation, meta, backend, snapshot, reserve)
+  if grid ~= nil then
+    right_fits = grid.beside
+    if preview then
+      ensure_preview_mark(bufnr, equation, meta, grid)
+    else
+      ensure_mark(bufnr, equation, meta, context, grid)
+    end
   end
-  if preview then
-    ensure_preview_mark(bufnr, equation, meta, grid)
-  else
-    ensure_mark(bufnr, equation, meta, context, grid)
-  end
+  label()
 end
 
 local function clear_unplaced_display(bufnr, state, key, active_images, backend)
@@ -1240,8 +1296,17 @@ local function update_existing_visible(bufnr, indexed_equations, snapshot)
         end
         needs_render = true
       else
-        update_label(context, bufnr, state, equation, numbers[index])
-        show_equation(bufnr, equation, meta, backend, snapshot, active_images, context, false)
+        show_equation(
+          bufnr,
+          equation,
+          meta,
+          backend,
+          snapshot,
+          active_images,
+          context,
+          false,
+          numbers[index]
+        )
       end
       clear_unplaced_display(bufnr, state, equation.key, active_images, backend)
     end
@@ -1434,8 +1499,17 @@ function M.render(bufnr)
       elseif not metadata_matches(meta, equation, option_cache) then
         batch[#batch + 1] = equation
       else
-        update_label(context, bufnr, state, equation, numbers[index])
-        show_equation(bufnr, equation, meta, backend, snapshot, active_images, context, false)
+        show_equation(
+          bufnr,
+          equation,
+          meta,
+          backend,
+          snapshot,
+          active_images,
+          context,
+          false,
+          numbers[index]
+        )
       end
       clear_unplaced_display(bufnr, state, equation.key, active_images, backend)
     end

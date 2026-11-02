@@ -21,6 +21,7 @@ This project follows a practical changelog format inspired by [Keep a Changelog]
 - Concealed inline math in the prefetched lines around the viewport and refreshed it as soon as scrolling passes them, so lines no longer show raw LaTeX and reflow just after scrolling into view.
 - Sent placeholder images again when another tmux client attaches, checked when the pane gains focus or the window resizes, so a terminal that attaches later shows the equations rendered before it.
 - Numbered equation labels by their position in the buffer, so they no longer change while scrolling.
+- Kept right-aligned equation labels clear of wide images: the image moves left to make room, and the label is hidden when the image is too wide to leave any.
 - Moved the rolling `unreleased` tag after publishing worker assets so source archives match the published build.
 - Detected Kitty and Ghostty from the terminal tmux is attached to, so display math renders in tmux over SSH, where the environment doesn't name the terminal. Control-mode clients (`tmux -CC`) are recognized by their `TERM`, `xterm-kitty` or `xterm-ghostty`.
 
