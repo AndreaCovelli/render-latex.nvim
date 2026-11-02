@@ -460,6 +460,10 @@ For image rendering in tmux:
   set -g default-terminal "tmux-256color"
 <
 
+In `auto` mode, Kitty graphics are used inside tmux when Neovim's environment
+names a Kitty graphics terminal, or when tmux's `#{client_termtype}` reports
+Kitty or Ghostty. Set `image.backend = "kitty"` to force them.
+
 With |render-latex-image.placeholders| (the default outside WezTerm), images
 belong to the pane's text, so tmux hides and redraws them itself and no cleanup
 hooks are needed. With fixed placements, session-local cleanup hooks are opt-in:
