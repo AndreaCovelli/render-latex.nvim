@@ -2,6 +2,7 @@ local Config = require("render_latex.config")
 local Compat = require("render_latex.compat")
 local Detect = require("render_latex.detect")
 local Unicode = require("render_latex.unicode")
+local Integrations = require("render_latex.integrations")
 local Util = require("render_latex.util")
 
 local M = {}
@@ -116,6 +117,19 @@ function M.set_placeholder(bufnr, ns, state, equation)
     })
 end
 
+-- Other plugins that draw the buffer from its text, like render-markdown.nvim for wrapped table
+-- rows, only see the new inline marks when they redraw, so tell them when the marks change.
+---@param bufnr integer
+---@param state render_latex.BufferState
+---@param signature string
+local function inline_marks_changed(bufnr, state, signature)
+  if signature == (state.inline_signature or "") then
+    return
+  end
+  state.inline_signature = signature
+  Integrations.refresh_render_markdown(bufnr)
+end
+
 ---@param bufnr integer
 ---@param ns integer
 ---@param state render_latex.BufferState
@@ -127,6 +141,7 @@ function M.render_inline_fallback(bufnr, ns, state, ranges)
   state.inline_marks = {}
 
   if Config.render.inline == false then
+    inline_marks_changed(bufnr, state, "")
     return
   end
 
@@ -149,9 +164,12 @@ function M.render_inline_fallback(bufnr, ns, state, ranges)
     end
   end
 
+  local signature = { Config.render.inline, tostring(Config.render.inline_symbols) }
   for index, item in ipairs(items) do
     local reveal = active[index]
     local mode = Config.render.inline
+    signature[#signature + 1] =
+      table.concat({ item.row, item.start_col, item.end_col, tostring(reveal), item.text }, ":")
 
     if mode == "conceal" and not reveal then
       state.inline_marks[#state.inline_marks + 1] =
@@ -193,6 +211,8 @@ function M.render_inline_fallback(bufnr, ns, state, ranges)
       end
     end
   end
+
+  inline_marks_changed(bufnr, state, table.concat(signature, "\n"))
 end
 
 ---@param bufnr integer
@@ -209,6 +229,7 @@ function M.clear_marks(bufnr, ns, state)
   end
   state.inline_marks = {}
   state.inline_coverage = nil
+  inline_marks_changed(bufnr, state, "")
 
   for _, mark_id in pairs(state.labels) do
     pcall(vim.api.nvim_buf_del_extmark, bufnr, ns, mark_id)

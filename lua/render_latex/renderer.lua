@@ -58,6 +58,7 @@ end
 ---@field attached boolean
 ---@field inline_marks integer[]
 ---@field inline_coverage table<integer, { top: integer, bottom: integer }>?
+---@field inline_signature string?
 ---@field manual_raw table<string, boolean>
 ---@field exit_timers table<string, any>
 ---@field delayed_render table<string, boolean>
