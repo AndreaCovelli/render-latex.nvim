@@ -24,6 +24,7 @@ This project follows a practical changelog format inspired by [Keep a Changelog]
 - Kept right-aligned equation labels clear of wide images: the image moves left to make room, and the label is hidden when the image is too wide to leave any.
 - Redrew `render-markdown.nvim` when inline math marks change, so versions that measure other plugins' extmarks show concealed math in wrapped table rows instead of raw LaTeX.
 - Math on list item lines indented four spaces is no longer taken for an indented code block. The Markdown parser decides which indented lines are code, and the line scan is used only when the parser is unavailable.
+- Fixed the render-markdown repro with the nvim-treesitter `main` branch, now its default, which removed `parsers.has_parser`, `nvim-treesitter.configs` and `:TSInstallSync`. The repro checks out `main` on Neovim 0.12+ and `master` on 0.10 and 0.11.
 - Moved the rolling `unreleased` tag after publishing worker assets so source archives match the published build.
 - Detected Kitty and Ghostty from the terminal tmux is attached to, so display math renders in tmux over SSH, where the environment doesn't name the terminal. Control-mode clients (`tmux -CC`) are recognized by their `TERM`, `xterm-kitty` or `xterm-ghostty`.
 
